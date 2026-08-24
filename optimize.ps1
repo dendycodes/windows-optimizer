@@ -4,7 +4,9 @@
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
     Write-Host "This script must be run as Administrator. Aborting." -ForegroundColor Red
-    exit
+    # 'return', not 'exit': this runs via `iwr | iex` inside an interactive session,
+    # so 'exit' would kill the whole PowerShell window instantly - too fast to read this message.
+    return
 }
 
 $Host.UI.RawUI.WindowTitle = "Windows Post-Install Optimizer"
