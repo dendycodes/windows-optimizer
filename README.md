@@ -5,7 +5,7 @@ A PowerShell script that automates the optional post-install tweaks from my Wind
 Meant to be launched via a Flipper Zero BadUSB payload that opens an elevated PowerShell and runs:
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/<user>/<repo>/main/optimize.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/dendycodes/windows-optimizer/main/optimize.ps1 | iex
 ```
 
 Requires Administrator privileges (self-checks and aborts otherwise).
