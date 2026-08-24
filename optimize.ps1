@@ -1,4 +1,4 @@
-﻿# Windows 10 Post-Install Optimizer
+# Windows 10 Post-Install Optimizer
 # Triggered via Flipper Zero BadUSB. Must run elevated (the launcher handles this).
 # Auto items apply immediately with a progress bar. Optional items ask Y/N one at a time - answer with your real keyboard.
 
@@ -10,22 +10,60 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 $Host.UI.RawUI.WindowTitle = "Windows Post-Install Optimizer"
 $ErrorActionPreference = 'Stop'
 $summary = [System.Collections.Generic.List[psobject]]::new()
+$Width = 78
+
+# --- Display helpers (ASCII-only: safe in any console codepage/font) ---
+
+function Write-Rule {
+    param([string]$Char = '-', [string]$Color = 'DarkGray')
+    Write-Host ('  ' + ($Char * ($Width - 2))) -ForegroundColor $Color
+}
 
 function Write-Banner {
-    Write-Host ""
-    Write-Host "  #############################################" -ForegroundColor Magenta
-    Write-Host "  ##     Windows Post-Install Optimizer      ##" -ForegroundColor Magenta
-    Write-Host "  #############################################" -ForegroundColor Magenta
-    Write-Host ""
+    $title = 'WINDOWS POST-INSTALL OPTIMIZER'
+    $inner = $Width - 2
+    $padLeft = [Math]::Floor(($inner - $title.Length) / 2)
+    $padRight = $inner - $title.Length - $padLeft
+    Write-Host ''
+    Write-Rule '=' 'White'
+    Write-Host ('  ' + (' ' * $padLeft) + $title + (' ' * $padRight)) -ForegroundColor White
+    Write-Rule '=' 'White'
+    Write-Host ''
+}
+
+function Write-SectionHeader {
+    param([string]$Title)
+    Write-Host ''
+    Write-Rule '-'
+    Write-Host ("   $Title") -ForegroundColor Yellow
+    Write-Rule '-'
+}
+
+function Write-StepResult {
+    param([string]$Tag, [string]$Label, [string]$Status, [string]$Color)
+    $left = "  $Tag $Label "
+    $right = " $Status"
+    $dotsCount = $Width - $left.Length - $right.Length
+    if ($dotsCount -lt 3) { $dotsCount = 3 }
+    Write-Host ($left + ('.' * $dotsCount) + $right) -ForegroundColor $Color
 }
 
 function Confirm-Step($Message) {
-    $resp = Read-Host "$Message (Y/N)"
+    $resp = Read-Host ("      > $Message [Y/N]")
     return $resp -match '^[Yy]'
 }
 
-function Add-Summary($Icon, $Label, $Status) {
-    $summary.Add([pscustomobject]@{ Icon = $Icon; Label = $Label; Status = $Status })
+function Add-Summary($Label, $Status) {
+    $summary.Add([pscustomobject]@{ Label = $Label; Status = $Status })
+}
+
+function Get-StatusTag($Status) {
+    switch ($Status) {
+        'Applied'    { return [pscustomobject]@{ Tag = 'OK';   Color = 'Green' } }
+        'AlreadySet' { return [pscustomobject]@{ Tag = 'SET';  Color = 'Cyan' } }
+        'Failed'     { return [pscustomobject]@{ Tag = 'FAIL'; Color = 'Red' } }
+        default      { return [pscustomobject]@{ Tag = 'SKIP'; Color = 'DarkGray' } }
+    }
 }
 
 function Get-RegValue($Path, $Name) {
@@ -54,7 +92,7 @@ function Disable-SvcSafe($Name, $Label) {
         Stop-Service -Name $Name -Force -ErrorAction SilentlyContinue
         Set-Service -Name $Name -StartupType Disabled
     } else {
-        Write-Host "      (!) $Label service not found on this system, skipping." -ForegroundColor DarkYellow
+        Write-Host "         Note: $Label service not found on this system, skipping." -ForegroundColor DarkYellow
     }
 }
 
@@ -74,51 +112,53 @@ function Invoke-Spinner {
 }
 
 function Invoke-AutoStep {
-    param([int]$Index, [int]$Total, [string]$Icon, [string]$Label, [scriptblock]$Action, [scriptblock]$Test = $null)
-    Write-Progress -Activity "Applying automatic optimizations" -Status "$Icon $Label" -PercentComplete (($Index / $Total) * 100)
+    param([int]$Index, [int]$Total, [string]$Label, [scriptblock]$Action, [scriptblock]$Test = $null)
+    Write-Progress -Activity "Applying automatic optimizations" -Status $Label -PercentComplete (($Index / $Total) * 100)
+    $tag = "[{0}/{1}]" -f $Index, $Total
     $already = $false
     if ($Test) { try { $already = & $Test } catch { $already = $false } }
     if ($already) {
-        Write-Host ("  {0} {1,-42} [Already Set]" -f $Icon, $Label) -ForegroundColor Cyan
-        Add-Summary $Icon $Label 'AlreadySet'
+        Write-StepResult -Tag $tag -Label $Label -Status 'SET' -Color Cyan
+        Add-Summary $Label 'AlreadySet'
         return
     }
     try {
         & $Action
         Start-Sleep -Milliseconds 150
-        Write-Host ("  {0} {1,-42} [OK]" -f $Icon, $Label) -ForegroundColor Green
-        Add-Summary $Icon $Label 'Applied'
+        Write-StepResult -Tag $tag -Label $Label -Status 'OK' -Color Green
+        Add-Summary $Label 'Applied'
     } catch {
-        Write-Host ("  {0} {1,-42} [FAILED]" -f $Icon, $Label) -ForegroundColor Red
-        Write-Host ("      Error: {0}" -f $_.Exception.Message) -ForegroundColor DarkRed
-        Add-Summary $Icon $Label 'Failed'
+        Write-StepResult -Tag $tag -Label $Label -Status 'FAIL' -Color Red
+        Write-Host ("         Error: {0}" -f $_.Exception.Message) -ForegroundColor DarkRed
+        Add-Summary $Label 'Failed'
     }
 }
 
 function Invoke-OptionalStep {
-    param([int]$Index, [int]$Total, [string]$Icon, [string]$Question, [scriptblock]$Action, [scriptblock]$Test = $null)
+    param([int]$Index, [int]$Total, [string]$Question, [scriptblock]$Action, [scriptblock]$Test = $null)
     Write-Progress -Activity "Optional items" -Status "Item $Index of $Total" -PercentComplete (($Index / $Total) * 100)
-    $prompt = "  {0} [{1}/{2}] {3}" -f $Icon, $Index, $Total, $Question
+    $tag = "[{0}/{1}]" -f $Index, $Total
+    Write-Host ''
+    Write-Host ("  $tag $Question") -ForegroundColor White
     $already = $false
     if ($Test) { try { $already = & $Test } catch { $already = $false } }
     if ($already) {
-        Write-Host $prompt -ForegroundColor DarkCyan
-        Write-Host "      -> Already set, nothing to do" -ForegroundColor Cyan
-        Add-Summary $Icon $Question 'AlreadySet'
+        Write-Host "         Already configured - nothing to do" -ForegroundColor Cyan
+        Add-Summary $Question 'AlreadySet'
         return
     }
-    if (Confirm-Step $prompt) {
+    if (Confirm-Step "Apply this change?") {
         try {
             & $Action
-            Write-Host "      -> Applied" -ForegroundColor Green
-            Add-Summary $Icon $Question 'Applied'
+            Write-Host "         Result: Applied" -ForegroundColor Green
+            Add-Summary $Question 'Applied'
         } catch {
-            Write-Host ("      -> Failed: {0}" -f $_.Exception.Message) -ForegroundColor Red
-            Add-Summary $Icon $Question 'Failed'
+            Write-Host ("         Result: Failed - {0}" -f $_.Exception.Message) -ForegroundColor Red
+            Add-Summary $Question 'Failed'
         }
     } else {
-        Write-Host "      -> Skipped" -ForegroundColor DarkGray
-        Add-Summary $Icon $Question 'Skipped'
+        Write-Host "         Result: Skipped" -ForegroundColor DarkGray
+        Add-Summary $Question 'Skipped'
     }
 }
 
@@ -127,35 +167,35 @@ Write-Banner
 $driveType = Get-SystemDriveMediaType
 switch ($driveType) {
     'SSD' {
-        Write-Host "  💾 Detected system drive: SSD" -ForegroundColor Cyan
+        Write-Host "  [INFO] System drive detected: SSD" -ForegroundColor Cyan
         $searchAdvice = "not recommended on your SSD, leave enabled"
         $sysMainAdvice = "recommended on your SSD"
     }
     'HDD' {
-        Write-Host "  💾 Detected system drive: HDD" -ForegroundColor Cyan
+        Write-Host "  [INFO] System drive detected: HDD" -ForegroundColor Cyan
         $searchAdvice = "recommended on your HDD"
         $sysMainAdvice = "not recommended on your HDD, leave enabled"
     }
     default {
-        Write-Host "  💾 Could not auto-detect drive type - decide based on your own hardware" -ForegroundColor DarkYellow
+        Write-Host "  [INFO] Could not auto-detect drive type - decide based on your own hardware" -ForegroundColor DarkYellow
         $searchAdvice = "recommended on HDDs only"
         $sysMainAdvice = "recommended on SSDs only"
     }
 }
 
 # --- Auto items ---
-Write-Host "  Auto items (applying now, no prompts):" -ForegroundColor Magenta
+Write-SectionHeader "AUTO ITEMS  (applied automatically, no prompts)"
 $autoTotal = 5
 $n = 0
 
-Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "🖼️ " -Label "Visual effects -> best performance" -Test {
+Invoke-AutoStep -Index (++$n) -Total $autoTotal -Label "Visual effects -> best performance" -Test {
     (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' 'VisualFXSetting') -eq 2
 } -Action {
     Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name 'UserPreferencesMask' -Value ([byte[]](0x90, 0x12, 0x03, 0x80, 0x10, 0x00, 0x00, 0x00)) -Type Binary -Force
     Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord -Force
 }
 
-Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "💽" -Label "Enabling Storage Sense" -Test {
+Invoke-AutoStep -Index (++$n) -Total $autoTotal -Label "Enabling Storage Sense" -Test {
     (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy' '01') -eq 1
 } -Action {
     $ssPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\StorageSense\Parameters\StoragePolicy'
@@ -163,7 +203,7 @@ Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "💽" -Label "Enabling St
     Set-ItemProperty -Path $ssPath -Name '01' -Value 1 -Type DWord -Force
 }
 
-Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "📴" -Label "Disabling background apps" -Test {
+Invoke-AutoStep -Index (++$n) -Total $autoTotal -Label "Disabling background apps" -Test {
     (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications' 'GlobalUserDisabled') -eq 1
 } -Action {
     $bgPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\BackgroundAccessApplications'
@@ -171,7 +211,7 @@ Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "📴" -Label "Disabling b
     Set-ItemProperty -Path $bgPath -Name 'GlobalUserDisabled' -Value 1 -Type DWord -Force
 }
 
-Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "🎮" -Label "Enabling Game Mode" -Test {
+Invoke-AutoStep -Index (++$n) -Total $autoTotal -Label "Enabling Game Mode" -Test {
     (Get-RegValue 'HKCU:\Software\Microsoft\GameBar' 'AutoGameModeEnabled') -eq 1
 } -Action {
     $gmPath = 'HKCU:\Software\Microsoft\GameBar'
@@ -179,7 +219,7 @@ Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "🎮" -Label "Enabling Ga
     Set-ItemProperty -Path $gmPath -Name 'AutoGameModeEnabled' -Value 1 -Type DWord -Force
 }
 
-Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "🛠️ " -Label "Ensuring Automatic Maintenance is on" -Test {
+Invoke-AutoStep -Index (++$n) -Total $autoTotal -Label "Ensuring Automatic Maintenance is on" -Test {
     $v = Get-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\Maintenance' 'MaintenanceDisabled'
     ($null -eq $v) -or ($v -eq 0)
 } -Action {
@@ -190,11 +230,11 @@ Invoke-AutoStep -Index (++$n) -Total $autoTotal -Icon "🛠️ " -Label "Ensurin
 Write-Progress -Activity "Applying automatic optimizations" -Completed
 
 # --- Optional items ---
-Write-Host "`n  Optional items (answer Y/N for each):" -ForegroundColor Magenta
+Write-SectionHeader "OPTIONAL ITEMS  (answer Y/N for each)"
 $optTotal = 13
 $m = 0
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🔍" -Question "Disable Cortana" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Disable Cortana" -Test {
     (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search' 'AllowCortana') -eq 0
 } -Action {
     $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Search'
@@ -202,7 +242,7 @@ Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🔍" -Question "Disab
     Set-ItemProperty -Path $path -Name 'AllowCortana' -Value 0 -Type DWord -Force
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🌐" -Question "Disable Internet Explorer 11 Windows feature" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Disable Internet Explorer 11 Windows feature" -Test {
     (Get-WindowsOptionalFeature -Online -FeatureName Internet-Explorer-Optional-amd64 -ErrorAction SilentlyContinue).State -eq 'Disabled'
 } -Action {
     Invoke-Spinner -Message "Removing Internet Explorer 11, this can take a bit..." -Action {
@@ -210,23 +250,23 @@ Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🌐" -Question "Disab
     }
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🪟" -Question "Turn off transparency effects" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Turn off transparency effects" -Test {
     (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' 'EnableTransparency') -eq 0
 } -Action {
     Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -Name 'EnableTransparency' -Value 0 -Type DWord -Force
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🎞️ " -Question "Disable window animations" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Disable window animations" -Test {
     (Get-RegValue 'HKCU:\Control Panel\Desktop\WindowMetrics' 'MinAnimate') -eq '0'
 } -Action {
     Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop\WindowMetrics' -Name 'MinAnimate' -Value '0' -Type String -Force
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "📄" -Question "Set pagefile automatically based on detected RAM (1.5x/3x)" -Action {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Set pagefile automatically based on detected RAM (1.5x/3x)" -Action {
     $ramGB = [math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)
     $initialMB = [math]::Round($ramGB * 1.5 * 1024)
     $maxMB = [math]::Round($ramGB * 3 * 1024)
-    Write-Host ("      Detected RAM: {0} GB -> Initial {1} MB / Max {2} MB" -f $ramGB, $initialMB, $maxMB) -ForegroundColor Cyan
+    Write-Host ("         Detected RAM: {0} GB -> Initial {1} MB / Max {2} MB" -f $ramGB, $initialMB, $maxMB) -ForegroundColor Cyan
     $cs = Get-WmiObject Win32_ComputerSystem
     $cs.AutomaticManagedPagefile = $false
     $cs.Put() | Out-Null
@@ -240,7 +280,7 @@ Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "📄" -Question "Set p
     }
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "📊" -Question "Reduce Windows telemetry to Basic" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Reduce Windows telemetry to Basic" -Test {
     (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection' 'AllowTelemetry') -eq 1
 } -Action {
     $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DataCollection'
@@ -248,7 +288,7 @@ Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "📊" -Question "Reduc
     Set-ItemProperty -Path $path -Name 'AllowTelemetry' -Value 1 -Type DWord -Force
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "📶" -Question "Turn off Delivery Optimization (P2P update downloads)" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Turn off Delivery Optimization (P2P update downloads)" -Test {
     (Get-RegValue 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization' 'DODownloadMode') -eq 0
 } -Action {
     $path = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\DeliveryOptimization'
@@ -256,7 +296,7 @@ Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "📶" -Question "Turn 
     Set-ItemProperty -Path $path -Name 'DODownloadMode' -Value 0 -Type DWord -Force
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "☁️ " -Question "Switch DNS to Cloudflare (1.1.1.1 / 1.0.0.1) on active adapters" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Switch DNS to Cloudflare (1.1.1.1 / 1.0.0.1) on active adapters" -Test {
     $adapters = Get-NetAdapter | Where-Object { $_.Status -eq 'Up' }
     if (-not $adapters) { return $false }
     foreach ($a in $adapters) {
@@ -270,31 +310,31 @@ Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "☁️ " -Question "Sw
     }
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🔎" -Question "Disable Windows Search service ($searchAdvice)" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Disable Windows Search service ($searchAdvice)" -Test {
     Test-SvcDisabled 'WSearch'
 } -Action {
     Disable-SvcSafe -Name 'WSearch' -Label 'Windows Search'
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "📡" -Question "Disable Connected User Experiences and Telemetry (DiagTrack)" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Disable Connected User Experiences and Telemetry (DiagTrack)" -Test {
     Test-SvcDisabled 'DiagTrack'
 } -Action {
     Disable-SvcSafe -Name 'DiagTrack' -Label 'Connected User Experiences and Telemetry'
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "🖨️ " -Question "Disable Print Spooler service (only if you never print)" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Disable Print Spooler service (only if you never print)" -Test {
     Test-SvcDisabled 'Spooler'
 } -Action {
     Disable-SvcSafe -Name 'Spooler' -Label 'Print Spooler'
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "⚡" -Question "Disable SysMain / SuperFetch ($sysMainAdvice)" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Disable SysMain / SuperFetch ($sysMainAdvice)" -Test {
     Test-SvcDisabled 'SysMain'
 } -Action {
     Disable-SvcSafe -Name 'SysMain' -Label 'SysMain'
 }
 
-Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "💡" -Question "Turn off tips, tricks and suggestions notifications" -Test {
+Invoke-OptionalStep -Index (++$m) -Total $optTotal -Question "Turn off tips, tricks and suggestions notifications" -Test {
     (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SubscribedContent-338389Enabled') -eq 0 -and
     (Get-RegValue 'HKCU:\Software\Microsoft\Windows\CurrentVersion\ContentDeliveryManager' 'SoftLandingEnabled') -eq 0
 } -Action {
@@ -306,21 +346,27 @@ Invoke-OptionalStep -Index (++$m) -Total $optTotal -Icon "💡" -Question "Turn 
 Write-Progress -Activity "Optional items" -Completed
 
 # --- Summary ---
-Write-Host ""
-Write-Host "  =============== Summary ===============" -ForegroundColor Magenta
+Write-Host ''
+Write-Rule '='
+$title = 'SUMMARY'
+Write-Host ('  ' + $title) -ForegroundColor White
+Write-Rule '='
 foreach ($item in $summary) {
-    switch ($item.Status) {
-        'Applied'    { Write-Host ("  ✅ {0}" -f $item.Label) -ForegroundColor Green }
-        'AlreadySet' { Write-Host ("  ☑️  {0} (already set)" -f $item.Label) -ForegroundColor Cyan }
-        'Failed'     { Write-Host ("  ❌ {0}" -f $item.Label) -ForegroundColor Red }
-        default      { Write-Host ("  ⏭️  {0}" -f $item.Label) -ForegroundColor DarkGray }
-    }
+    $info = Get-StatusTag $item.Status
+    Write-Host ("    {0,-6} {1}" -f $info.Tag, $item.Label) -ForegroundColor $info.Color
 }
-Write-Host "  =========================================" -ForegroundColor Magenta
+Write-Rule '-'
+$applied = ($summary | Where-Object Status -eq 'Applied').Count
+$already = ($summary | Where-Object Status -eq 'AlreadySet').Count
+$skipped = ($summary | Where-Object Status -eq 'Skipped').Count
+$failed  = ($summary | Where-Object Status -eq 'Failed').Count
+Write-Host ("    Applied: {0}   Already set: {1}   Skipped: {2}   Failed: {3}" -f $applied, $already, $skipped, $failed) -ForegroundColor White
+Write-Rule '='
 
-Write-Host "`n  (!) Some changes (pagefile, IE11 removal, animations) need a restart to fully apply." -ForegroundColor Yellow
-if (Confirm-Step "Restart now") {
-    Write-Host "  🔁 Restarting..." -ForegroundColor Cyan
+Write-Host ''
+Write-Host "  NOTE: Some changes (pagefile, IE11 removal, animations) need a restart to fully apply." -ForegroundColor Yellow
+if (Confirm-Step "Restart now?") {
+    Write-Host "  Restarting..." -ForegroundColor Cyan
     Restart-Computer -Force
 } else {
     Write-Host "  Remember to restart later." -ForegroundColor Yellow
